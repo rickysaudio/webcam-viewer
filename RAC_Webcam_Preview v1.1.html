@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Fullscreen Webcam (Pro) - Improved</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: dark; --mirror: 1; --vflip: 1; --fit: cover; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background:#000; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .toolbar {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+      padding: .5rem .75rem; background: rgba(0,0,0,.5); backdrop-filter: blur(6px);
+      z-index: 10;
+    }
+    .toolbar select, .toolbar button, .toolbar label { font-size: 14px; color:#fff; }
+    .toolbar select, .toolbar button {
+      background: #111; color: #fff; border: 1px solid #333; border-radius: 8px; padding: .4rem .6rem;
+    }
+    .toolbar button:hover { border-color:#666; cursor:pointer; }
+    .spacer { flex: 1; min-width: 1rem; }
+    .wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+    video {
+      width: 100vw; height: 100vh;
+      object-fit: var(--fit, cover);
+      background: #000;
+      transform: scaleX(var(--mirror, 1)) scaleY(var(--vflip, 1));
+    }
+    .msg {
+      position: fixed; bottom: .75rem; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.55); color:#fff; padding:.35rem .6rem; border-radius:8px; font-size:12px;
+      opacity: 1; transition: opacity 0.3s ease-in-out;
+    }
+    .msg.hidden { opacity: 0; pointer-events: none; }
+    .overlay {
+      position: fixed; left: .75rem; bottom: .75rem; z-index: 11;
+      background: rgba(0,0,0,.6); color: #eaeaea; font-size: 12px; line-height: 1.35;
+      padding: .5rem .6rem; border-radius: 8px; min-width: 230px; pointer-events: none; user-select: none;
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .overlay .row { display: flex; justify-content: space-between; gap: .75rem; }
+    .overlay .label { opacity: .75; }
+    .good { color: #7fd87f; }
+    .warn { color: #f0d67c; }
+    .bad  { color: #ff8a8a; }
+    /* Clean feed: hide everything except the video */
+    .clean .toolbar, .clean .overlay, .clean .msg { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="toolbar" role="toolbar" aria-label="Webcam controls">
+    <label for="cameraSelect">Camera:</label>
+    <select id="cameraSelect" title="Choose a camera" aria-label="Camera selection"></select>
+
+    <label for="resSelect">Resolution:</label>
+    <select id="resSelect" title="Select resolution" aria-label="Resolution">
+      <option value="auto">Auto</option>
+      <option value="640x480">640×480 (480p)</option>
+      <option value="1280x720">1280×720 (720p)</option>
+      <option value="1920x1080">1920×1080 (1080p)</option>
+      <option value="2560x1440">2560×1440 (1440p)</option>
+      <option value="3840x2160">3840×2160 (4K)</option>
+    </select>
+
+    <label for="fpsSelect">FPS:</label>
+    <select id="fpsSelect" title="Target FPS" aria-label="Target FPS">
+      <option value="auto">Auto</option>
+      <option value="30">30</option>
+      <option value="60">60</option>
+    </select>
+
+    <button id="refreshBtn" title="Rescan cameras" aria-label="Refresh cameras">↻ Refresh</button>
+
+    <label style="display:flex;align-items:center;gap:.35rem;">
+      <input type="checkbox" id="mirrorChk" aria-label="Mirror video" /> Mirror
+    </label>
+
+    <label style="display:flex;align-items:center;gap:.35rem;">
+      <input type="checkbox" id="vflipChk" aria-label="Flip vertical" /> Flip Vertical
+    </label>
+
+    <label for="fitSelect">View:</label>
+    <select id="fitSelect" title="Fit or Fill" aria-label="Fit or Fill">
+      <option value="cover">Fill (cover, may crop)</option>
+      <option value="contain">Fit (no crop, letterbox)</option>
+    </select>
+
+    <label style="display:flex;align-items:center;gap:.35rem;">
+      <input type="checkbox" id="cleanChk" aria-label="Clean Feed (hide UI/overlay)" />
+      Clean Feed
+    </label>
+
+    <div class="spacer"></div>
+    <button id="fsBtn" title="Fullscreen (F)" aria-label="Toggle fullscreen">⛶ Fullscreen</button>
+  </div>
+
+  <div class="wrap" id="stage">
+    <video id="video" autoplay playsinline></video>
+  </div>
+
+  <div class="overlay" id="overlay" aria-live="polite">
+    <div class="row"><span class="label">Device</span><span id="ovDevice">—</span></div>
+    <div class="row"><span class="label">Resolution</span><span id="ovRes">—</span></div>
+    <div class="row"><span class="label">FPS (est.)</span><span id="ovFps">—</span></div>
+    <div class="row"><span class="label">Track FPS</span><span id="ovTrackFps">—</span></div>
+    <div class="row"><span class="label">Target FPS</span><span id="ovTarget">—</span></div>
+    <div class="row"><span class="label">Dropped frames</span><span id="ovDropped">—</span></div>
+  </div>
+
+  <div id="messageBox" class="msg hidden"></div>
+
+  <script>
+    const sel = document.getElementById('cameraSelect');
+    const resSelect = document.getElementById('resSelect');
+    const fpsSelect = document.getElementById('fpsSelect');
+    const video = document.getElementById('video');
+    const fsBtn = document.getElementById('fsBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const mirrorChk = document.getElementById('mirrorChk');
+    const vflipChk = document.getElementById('vflipChk');
+    const fitSelect = document.getElementById('fitSelect');
+    const cleanChk = document.getElementById('cleanChk');
+    const stage = document.getElementById('stage');
+    const messageBox = document.getElementById('messageBox');
+
+    const ovDevice = document.getElementById('ovDevice');
+    const ovRes = document.getElementById('ovRes');
+    const ovFps = document.getElementById('ovFps');
+    const ovTrackFps = document.getElementById('ovTrackFps');
+    const ovTarget = document.getElementById('ovTarget');
+    const ovDropped = document.getElementById('ovDropped');
+
+    let currentStream = null;
+    let rafHandle = null;
+    let frames = 0, lastTs = performance.now(), fps = 0;
+    let messageTimeout = null;
+
+    const LS_CAM = 'preferredCamId';
+    const LS_MIRROR = 'mirrorEnabled';
+    const LS_VFLIP = 'vflipEnabled';
+    const LS_FIT = 'fitMode';
+    const LS_RES = 'preferredRes';
+    const LS_FPS = 'preferredFps';
+    const LS_CLEAN = 'cleanFeed';
+
+    // --- NEW: A friendlier way to show messages instead of alert() ---
+    function showMessage(text, duration = 4000) {
+        messageBox.textContent = text;
+        messageBox.classList.remove('hidden');
+        clearTimeout(messageTimeout);
+        if (duration > 0) {
+            messageTimeout = setTimeout(() => messageBox.classList.add('hidden'), duration);
+        }
+    }
+
+    // --- REVISED: More robust camera listing ---
+    async function listCameras() {
+        // First, ensure we have permission. This is crucial for getting camera labels.
+        // We request a generic stream which is likely to succeed on any device.
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            // Immediately stop the tracks from this temporary stream. We don't need to show it.
+            stream.getTracks().forEach(track => track.stop());
+        } catch (e) {
+            // If this fails, the user likely denied permission.
+            console.error('Permission error:', e);
+            showMessage('Camera permission is required to list and use webcams.');
+            return; // Stop here if we don't have permission
+        }
+
+        // Now that we have permission, device labels should be available.
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        
+        const savedValue = sel.value; // Save the currently selected camera
+        sel.innerHTML = ''; // Clear the dropdown
+        
+        if (cams.length === 0) {
+            showMessage('No cameras found.');
+            return;
+        }
+
+        cams.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            // Use the device label if available, otherwise a generic name.
+            opt.textContent = d.label || `Camera ${i + 1}`;
+            sel.appendChild(opt);
+        });
+
+        // Try to restore the previously selected camera
+        const savedCam = localStorage.getItem(LS_CAM);
+        if (savedCam && [...sel.options].some(o => o.value === savedCam)) {
+            sel.value = savedCam;
+        } else if (savedValue && [...sel.options].some(o => o.value === savedValue)) {
+            // If the previously saved one isn't there, maybe the one that was just active is.
+            sel.value = savedValue;
+        }
+
+        // If the selection has changed or there's no stream, start a new one.
+        if (sel.value !== savedValue || !currentStream) {
+            await startStream(sel.value);
+        }
+    }
+    
+    // --- REVISED: More flexible constraints to prevent errors ---
+    function buildConstraints(deviceId) {
+        const constraints = {
+            audio: false,
+            video: {
+                // Always be 'exact' with the device ID to get the correct camera.
+                deviceId: deviceId ? { exact: deviceId } : undefined
+            }
+        };
+
+        const res = resSelect.value;
+        if (res !== 'auto') {
+            const [width, height] = res.split('x').map(Number);
+            // Use 'ideal' instead of 'exact'. This tells the browser to get as close as possible
+            // without failing if the exact resolution isn't available.
+            constraints.video.width = { ideal: width };
+            constraints.video.height = { ideal: height };
+        }
+
+        const fpsVal = fpsSelect.value;
+        if (fpsVal !== 'auto') {
+            // Same for frame rate - 'ideal' is much safer.
+            constraints.video.frameRate = { ideal: parseInt(fpsVal, 10) };
+        }
+
+        return constraints;
+    }
+
+    // --- REVISED: Better error handling in startStream ---
+    async function startStream(deviceId) {
+        stopStream(); // Stop any existing stream first.
+
+        if (!deviceId) {
+            showMessage("No camera selected.");
+            return;
+        }
+
+        const constraints = buildConstraints(deviceId);
+        console.log("Requesting stream with constraints:", JSON.stringify(constraints, null, 2));
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            currentStream = stream;
+            video.srcObject = stream;
+            await video.play();
+
+            // Save preferences
+            localStorage.setItem(LS_CAM, deviceId);
+            localStorage.setItem(LS_RES, resSelect.value);
+            localStorage.setItem(LS_FPS, fpsSelect.value);
+
+            updateOverlayDevice();
+            ovTarget.textContent = (fpsSelect.value === 'auto') ? 'auto' : fpsSelect.value;
+            resetFpsCounter();
+            startFpsLoop();
+            showMessage("Camera stream started!", 2000);
+
+        } catch (err) {
+            console.error('Failed to start stream:', err);
+            let message = 'Error starting camera. See console for details.';
+            if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+                message = 'Permission denied. Please allow camera access in browser settings.';
+            } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                message = 'No camera found. Connect a webcam and click Refresh.';
+            } else if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+                message = 'Selected settings (resolution/FPS) are not supported by this camera.';
+            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                message = 'Camera is already in use by another application.';
+            }
+            showMessage(message);
+        }
+    }
+
+    function stopStream() {
+        if (currentStream) {
+            currentStream.getTracks().forEach(t => t.stop());
+            currentStream = null;
+        }
+        if (rafHandle) {
+            cancelAnimationFrame(rafHandle);
+            rafHandle = null;
+        }
+        video.srcObject = null;
+    }
+
+    function applyMirror() {
+        document.documentElement.style.setProperty('--mirror', mirrorChk.checked ? '-1' : '1');
+        localStorage.setItem(LS_MIRROR, mirrorChk.checked);
+    }
+
+    function applyVFlip() {
+        document.documentElement.style.setProperty('--vflip', vflipChk.checked ? '-1' : '1');
+        localStorage.setItem(LS_VFLIP, vflipChk.checked);
+    }
+
+    function applyFit() {
+        const value = fitSelect.value;
+        document.documentElement.style.setProperty('--fit', value);
+        localStorage.setItem(LS_FIT, value);
+    }
+
+    function applyCleanFeed() {
+        document.body.classList.toggle('clean', cleanChk.checked);
+        localStorage.setItem(LS_CLEAN, cleanChk.checked);
+    }
+
+    async function goFullscreen() {
+        try {
+            if (!document.fullscreenElement) await stage.requestFullscreen();
+            else await document.exitFullscreen();
+        } catch (e) {
+            console.error('Fullscreen toggle failed:', e);
+        }
+    }
+
+    function resetFpsCounter() {
+        frames = 0;
+        lastTs = performance.now();
+        fps = 0;
+    }
+
+    function startFpsLoop() {
+        const loop = (ts) => {
+            frames++;
+            if (ts - lastTs >= 500) {
+                fps = Math.round((frames * 1000) / (ts - lastTs));
+                frames = 0;
+                lastTs = ts;
+                updateOverlayStats();
+            }
+            rafHandle = requestAnimationFrame(loop);
+        };
+        if (!rafHandle) rafHandle = requestAnimationFrame(loop);
+    }
+
+    function updateOverlayDevice() {
+        if (!currentStream) return;
+        const track = currentStream.getVideoTracks()[0];
+        const settings = track?.getSettings() || {};
+        const label = track?.label || sel.selectedOptions[0]?.textContent || '—';
+        ovDevice.textContent = label;
+        ovTrackFps.textContent = settings.frameRate ? Number(settings.frameRate).toFixed(0) : '—';
+    }
+
+    function updateOverlayStats() {
+        const w = video.videoWidth || 0;
+        const h = video.videoHeight || 0;
+        ovRes.textContent = (w && h) ? `${w} × ${h}` : '—';
+
+        let cls = 'good';
+        if (fps < 24) cls = 'bad';
+        else if (fps < 28) cls = 'warn';
+        ovFps.className = cls;
+        ovFps.textContent = fps ? `${fps}` : '—';
+
+        try {
+            const q = video.getVideoPlaybackQuality?.();
+            ovDropped.textContent = (q && typeof q.droppedVideoFrames === 'number') ? `${q.droppedVideoFrames}` : 'n/a';
+        } catch {
+            ovDropped.textContent = 'n/a';
+        }
+    }
+
+    // --- Event Listeners ---
+    sel.addEventListener('change', () => startStream(sel.value));
+    resSelect.addEventListener('change', () => startStream(sel.value));
+    fpsSelect.addEventListener('change', () => startStream(sel.value));
+    fsBtn.addEventListener('click', goFullscreen);
+    refreshBtn.addEventListener('click', listCameras);
+    mirrorChk.addEventListener('change', applyMirror);
+    vflipChk.addEventListener('change', applyVFlip);
+    fitSelect.addEventListener('change', applyFit);
+    cleanChk.addEventListener('change', applyCleanFeed);
+    stage.addEventListener('dblclick', goFullscreen);
+
+    window.addEventListener('keydown', (e) => {
+        if (e.target.matches('select, input, button')) return; // Ignore hotkeys if interacting with controls
+        const k = e.key.toLowerCase();
+        if (k === 'f') goFullscreen();
+        if (k === 'm') { mirrorChk.checked = !mirrorChk.checked; applyMirror(); }
+        if (k === 'l') { vflipChk.checked = !vflipChk.checked; applyVFlip(); }
+        if (k === 'v') { fitSelect.value = (fitSelect.value === 'cover' ? 'contain' : 'cover'); applyFit(); }
+        if (k === 'c') { cleanChk.checked = !cleanChk.checked; applyCleanFeed(); }
+        if (e.key === 'Escape' && !document.fullscreenElement && cleanChk.checked) {
+            cleanChk.checked = false;
+            applyCleanFeed();
+        }
+    });
+
+    navigator.mediaDevices.addEventListener?.('devicechange', () => {
+        showMessage("Device change detected. Refreshing camera list...", 3000);
+        setTimeout(listCameras, 500); // A small delay can help prevent race conditions
+    });
+
+    video.addEventListener('loadedmetadata', updateOverlayStats);
+    window.addEventListener('resize', updateOverlayStats);
+
+    // --- Initialization ---
+    function initialize() {
+        // Restore preferences from localStorage
+        mirrorChk.checked = localStorage.getItem(LS_MIRROR) === 'true';
+        vflipChk.checked = localStorage.getItem(LS_VFLIP) === 'true';
+        applyMirror();
+        applyVFlip();
+
+        fitSelect.value = localStorage.getItem(LS_FIT) || 'cover';
+        applyFit();
+
+        resSelect.value = localStorage.getItem(LS_RES) || 'auto';
+        fpsSelect.value = localStorage.getItem(LS_FPS) || 'auto';
+        ovTarget.textContent = (fpsSelect.value === 'auto') ? 'auto' : fpsSelect.value;
+
+        cleanChk.checked = localStorage.getItem(LS_CLEAN) === 'true';
+        applyCleanFeed();
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            showMessage("Your browser does not support camera access (getUserMedia).");
+            return;
+        }
+        
+        // Start the process
+        listCameras();
+    }
+
+    initialize();
+  </script>
+</body>
+</html>
