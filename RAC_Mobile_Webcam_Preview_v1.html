@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mobile Webcam Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <style>
+    :root { 
+      color-scheme: dark; 
+      --mirror: 1; 
+      --vflip: 1; 
+      --fit: cover; 
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { 
+      height: 100%; 
+      width: 100%;
+      overflow: hidden;
+      margin: 0; 
+      background:#000; 
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; 
+    }
+    .toolbar {
+      position: fixed; 
+      top: 0; 
+      left: 0; 
+      right: 0;
+      display: flex; 
+      gap: .75rem; 
+      align-items: center; 
+      flex-wrap: wrap;
+      padding: .75rem; 
+      background: rgba(0,0,0,.6); 
+      backdrop-filter: blur(8px);
+      z-index: 10;
+      transform: translateY(0);
+      opacity: 1;
+      transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+    }
+    .toolbar.loading { 
+      opacity: 0.7; 
+      pointer-events: none; 
+    }
+    .toolbar label { 
+      font-size: 16px; 
+      color:#fff; 
+    }
+    .toolbar select, .toolbar button {
+      font-size: 16px;
+      background: #222; 
+      color: #fff; 
+      border: 1px solid #444; 
+      border-radius: 10px; 
+      padding: .6rem .8rem;
+    }
+    .toolbar button:active { 
+      background-color: #333; 
+    }
+    .spacer { 
+      flex: 1; 
+      min-width: 1rem; 
+    }
+    .wrap { 
+      position: fixed; 
+      inset: 0; 
+      display: grid; 
+      place-items: center; 
+    }
+    video {
+      width: 100%; 
+      height: 100%;
+      object-fit: var(--fit, cover);
+      background: #000;
+      transform: scaleX(var(--mirror, 1)) scaleY(var(--vflip, 1));
+    }
+    .msg {
+      position: fixed; 
+      bottom: 1rem; 
+      left: 50%; 
+      transform: translateX(-50%);
+      background: rgba(0,0,0,.65); 
+      color:#fff; 
+      padding:.5rem .8rem; 
+      border-radius:10px; 
+      font-size: 14px;
+      text-align: center;
+      max-width: 90%;
+      opacity: 1; 
+      transition: opacity 0.3s ease-in-out;
+      z-index: 20;
+    }
+    .msg.hidden { 
+      opacity: 0; 
+      pointer-events: none; 
+    }
+    .overlay {
+      position: fixed; 
+      left: .75rem; 
+      bottom: .75rem; 
+      z-index: 11;
+      background: rgba(0,0,0,.6); 
+      color: #eaeaea; 
+      font-size: 12px; 
+      line-height: 1.35;
+      padding: .5rem .6rem; 
+      border-radius: 8px; 
+      min-width: 230px; 
+      pointer-events: none; 
+      user-select: none;
+      border: 1px solid rgba(255,255,255,.08);
+      opacity: 1;
+      transition: opacity 0.3s ease-out;
+    }
+    .overlay .row { 
+      display: flex; 
+      justify-content: space-between; 
+      gap: .75rem; 
+    }
+    .overlay .label { opacity: .75; }
+    .good { color: #7fd87f; }
+    .warn { color: #f0d67c; }
+    .bad  { color: #ff8a8a; }
+    
+    /* State for hiding UI elements */
+    .controls-hidden .toolbar {
+        transform: translateY(-120%);
+        opacity: 0;
+        pointer-events: none;
+    }
+    .controls-hidden .overlay {
+        opacity: 0;
+        pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div class="toolbar" id="toolbar" role="toolbar" aria-label="Webcam controls">
+      <label for="cameraSelect">Cam:</label>
+      <select id="cameraSelect" title="Choose a camera" aria-label="Camera selection"></select>
+
+      <label for="resSelect">Res:</label>
+      <select id="resSelect" title="Select resolution" aria-label="Resolution">
+        <option value="auto">Auto</option>
+        <option value="640x480">480p</option>
+        <option value="1280x720">720p</option>
+        <option value="1920x1080">1080p</option>
+        <option value="3840x2160">4K</option>
+      </select>
+
+      <button id="refreshBtn" title="Rescan cameras" aria-label="Refresh cameras">↻</button>
+
+      <label style="display:flex;align-items:center;gap:.35rem;">
+        <input type="checkbox" id="mirrorChk" aria-label="Mirror video" /> Mirror
+      </label>
+
+      <label style="display:flex;align-items:center;gap:.35rem;">
+        <input type="checkbox" id="vflipChk" aria-label="Flip vertical" /> Flip
+      </label>
+
+      <label for="fitSelect">View:</label>
+      <select id="fitSelect" title="Fit or Fill" aria-label="Fit or Fill">
+        <option value="cover">Fill</option>
+        <option value="contain">Fit</option>
+      </select>
+      
+      <div class="spacer"></div>
+      <button id="fsBtn" title="Fullscreen" aria-label="Toggle fullscreen">⛶</button>
+      <button id="hideBtn" title="Hide Controls" aria-label="Hide Controls">✕</button>
+    </div>
+
+    <div class="wrap" id="stage">
+      <video id="video" autoplay playsinline muted></video>
+    </div>
+
+    <div class="overlay" id="overlay" aria-live="polite">
+      <div class="row"><span class="label">Device</span><span id="ovDevice">—</span></div>
+      <div class="row"><span class="label">Resolution</span><span id="ovRes">—</span></div>
+      <div class="row"><span class="label">FPS (est.)</span><span id="ovFps">—</span></div>
+    </div>
+  </div>
+
+  <div id="messageBox" class="msg hidden"></div>
+
+  <script>
+    const container = document.getElementById('container');
+    const sel = document.getElementById('cameraSelect');
+    const resSelect = document.getElementById('resSelect');
+    const video = document.getElementById('video');
+    const fsBtn = document.getElementById('fsBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const mirrorChk = document.getElementById('mirrorChk');
+    const vflipChk = document.getElementById('vflipChk');
+    const fitSelect = document.getElementById('fitSelect');
+    const hideBtn = document.getElementById('hideBtn');
+    const stage = document.getElementById('stage');
+    const messageBox = document.getElementById('messageBox');
+    const toolbar = document.getElementById('toolbar');
+
+    const ovDevice = document.getElementById('ovDevice');
+    const ovRes = document.getElementById('ovRes');
+    const ovFps = document.getElementById('ovFps');
+
+    let currentStream = null;
+    let rafHandle = null;
+    let frames = 0, lastTs = performance.now(), fps = 0;
+    let messageTimeout = null;
+    let isListingCameras = false;
+    let hideControlsTimeout = null;
+
+    const LS_PREFIX = 'rac_mobile_cam_';
+    const LS_CAM = LS_PREFIX + 'preferredCamId';
+    const LS_MIRROR = LS_PREFIX + 'mirrorEnabled';
+    const LS_VFLIP = LS_PREFIX + 'vflipEnabled';
+    const LS_FIT = LS_PREFIX + 'fitMode';
+    const LS_RES = LS_PREFIX + 'preferredRes';
+    const LS_CONTROLS_HIDDEN = LS_PREFIX + 'controlsHidden';
+
+    function showMessage(text, duration = 4000) {
+        messageBox.textContent = text;
+        messageBox.classList.remove('hidden');
+        clearTimeout(messageTimeout);
+        if (duration > 0) {
+            messageTimeout = setTimeout(() => messageBox.classList.add('hidden'), duration);
+        }
+    }
+    
+    function setControlsVisibility(isHidden) {
+        container.classList.toggle('controls-hidden', isHidden);
+        localStorage.setItem(LS_CONTROLS_HIDDEN, isHidden);
+        if (!isHidden) {
+            resetHideControlsTimer();
+        } else {
+            clearTimeout(hideControlsTimeout);
+        }
+    }
+    
+    function resetHideControlsTimer() {
+        clearTimeout(hideControlsTimeout);
+        hideControlsTimeout = setTimeout(() => setControlsVisibility(true), 5000);
+    }
+
+    function setToolbarLoading(isLoading) {
+        toolbar.classList.toggle('loading', isLoading);
+    }
+
+    async function listCameras() {
+        if (isListingCameras) return;
+        isListingCameras = true;
+        setToolbarLoading(true);
+        showMessage("Scanning for cameras...", 0);
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream.getTracks().forEach(track => track.stop());
+        } catch (e) {
+            console.error('Permission error:', e);
+            showMessage('Camera permission is required. Please allow access in your browser settings.');
+            setToolbarLoading(false);
+            isListingCameras = false;
+            return;
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        
+        sel.innerHTML = '';
+        
+        if (cams.length === 0) {
+            showMessage('No cameras found.');
+            setToolbarLoading(false);
+            isListingCameras = false;
+            return;
+        }
+
+        let preferredCamFound = false;
+        const savedCam = localStorage.getItem(LS_CAM);
+        const rearFacingCam = cams.find(d => /back|rear/i.test(d.label));
+
+        cams.forEach((d) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Camera (${d.deviceId.slice(0, 4)})`;
+            sel.appendChild(opt);
+            if (d.deviceId === savedCam) preferredCamFound = true;
+        });
+        
+        if (preferredCamFound) {
+            sel.value = savedCam;
+        } else if (rearFacingCam) {
+            sel.value = rearFacingCam.deviceId;
+        } else if (cams.length > 0) {
+            sel.value = cams[0].deviceId;
+        }
+        
+        showMessage("Cameras listed.", 2000);
+        setToolbarLoading(false);
+        isListingCameras = false;
+        
+        await startStream(sel.value);
+    }
+    
+    function buildConstraints(deviceId) {
+        const constraints = {
+            audio: false,
+            video: {
+                deviceId: deviceId ? { exact: deviceId } : undefined,
+                facingMode: 'environment'
+            }
+        };
+
+        const res = resSelect.value;
+        if (res !== 'auto') {
+            const [width, height] = res.split('x').map(Number);
+            constraints.video.width = { ideal: width };
+            constraints.video.height = { ideal: height };
+        }
+        return constraints;
+    }
+
+    async function startStream(deviceId) {
+        stopStream();
+        setToolbarLoading(true);
+
+        if (!deviceId) {
+            showMessage("No camera selected.");
+            setToolbarLoading(false);
+            return;
+        }
+        
+        showMessage(`Connecting...`, 0);
+        const constraints = buildConstraints(deviceId);
+        
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            currentStream = stream;
+            video.srcObject = stream;
+            // The video element is muted, play should succeed on mobile.
+            await video.play();
+
+            localStorage.setItem(LS_CAM, deviceId);
+            localStorage.setItem(LS_RES, resSelect.value);
+
+            updateOverlayDevice();
+            resetFpsCounter();
+            startFpsLoop();
+            showMessage("Stream started!", 2000);
+
+        } catch (err) {
+            console.error(`Failed to start stream for ${deviceId}:`, err);
+            let message = 'Could not start camera.';
+            if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+                message = 'Resolution not supported by this camera.';
+            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                message = 'Camera is in use by another app.';
+            }
+            showMessage(message);
+
+            const currentOption = sel.querySelector(`option[value="${deviceId}"]`);
+            if (currentOption) {
+                currentOption.textContent += " (X)";
+                currentOption.disabled = true;
+            }
+
+            const nextOption = [...sel.options].find(o => !o.disabled);
+            if (nextOption) {
+                sel.value = nextOption.value;
+                await startStream(nextOption.value);
+            } else {
+                showMessage("All cameras failed to start.", 5000);
+            }
+        } finally {
+            setToolbarLoading(false);
+        }
+    }
+
+    function stopStream() {
+        if (currentStream) {
+            currentStream.getTracks().forEach(t => t.stop());
+            currentStream = null;
+        }
+        if (rafHandle) {
+            cancelAnimationFrame(rafHandle);
+            rafHandle = null;
+        }
+        video.srcObject = null;
+    }
+
+    function applyMirror() {
+        document.documentElement.style.setProperty('--mirror', mirrorChk.checked ? '-1' : '1');
+        localStorage.setItem(LS_MIRROR, mirrorChk.checked);
+    }
+
+    function applyVFlip() {
+        document.documentElement.style.setProperty('--vflip', vflipChk.checked ? '-1' : '1');
+        localStorage.setItem(LS_VFLIP, vflipChk.checked);
+    }
+
+    function applyFit() {
+        const value = fitSelect.value;
+        document.documentElement.style.setProperty('--fit', value);
+        localStorage.setItem(LS_FIT, value);
+    }
+
+    async function goFullscreen() {
+        const elem = document.documentElement;
+        try {
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) {
+                    await elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) { /* Safari */
+                    await elem.webkitRequestFullscreen();
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    await document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) { /* Safari */
+                    await document.webkitExitFullscreen();
+                }
+            }
+        } catch (e) {
+            console.error('Fullscreen toggle failed:', e);
+        }
+    }
+
+    function resetFpsCounter() {
+        frames = 0;
+        lastTs = performance.now();
+        fps = 0;
+    }
+
+    function startFpsLoop() {
+        const loop = (ts) => {
+            frames++;
+            if (ts - lastTs >= 1000) { // Update once per second for less overhead
+                fps = Math.round((frames * 1000) / (ts - lastTs));
+                frames = 0;
+                lastTs = ts;
+                updateOverlayStats();
+            }
+            rafHandle = requestAnimationFrame(loop);
+        };
+        if (!rafHandle) rafHandle = requestAnimationFrame(loop);
+    }
+
+    function updateOverlayDevice() {
+        if (!currentStream) return;
+        const track = currentStream.getVideoTracks()[0];
+        const label = track?.label || sel.selectedOptions[0]?.textContent || '—';
+        ovDevice.textContent = label;
+    }
+
+    function updateOverlayStats() {
+        const w = video.videoWidth || 0;
+        const h = video.videoHeight || 0;
+        ovRes.textContent = (w && h) ? `${w} × ${h}` : '—';
+        ovFps.textContent = fps ? `${fps}` : '—';
+    }
+
+    // --- Event Listeners ---
+    sel.addEventListener('change', () => startStream(sel.value));
+    resSelect.addEventListener('change', () => startStream(sel.value));
+    fsBtn.addEventListener('click', goFullscreen);
+    refreshBtn.addEventListener('click', listCameras);
+    mirrorChk.addEventListener('change', applyMirror);
+    vflipChk.addEventListener('change', applyVFlip);
+    fitSelect.addEventListener('change', applyFit);
+    
+    stage.addEventListener('click', () => {
+        setControlsVisibility(container.classList.contains('controls-hidden') ? false : true);
+    });
+    hideBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent stage click from firing right after
+        setControlsVisibility(true);
+    });
+
+    // Reset auto-hide timer on any interaction with the toolbar
+    toolbar.addEventListener('click', resetHideControlsTimer);
+    toolbar.addEventListener('change', resetHideControlsTimer);
+
+
+    video.addEventListener('loadedmetadata', updateOverlayStats);
+    window.addEventListener('resize', updateOverlayStats);
+    navigator.mediaDevices.addEventListener?.('devicechange', () => {
+        showMessage("Device change detected. Refreshing...", 3000);
+        listCameras();
+    });
+
+    // --- Initialization ---
+    function initialize() {
+        mirrorChk.checked = localStorage.getItem(LS_MIRROR) === 'true';
+        vflipChk.checked = localStorage.getItem(LS_VFLIP) === 'true';
+        applyMirror();
+        applyVFlip();
+
+        fitSelect.value = localStorage.getItem(LS_FIT) || 'cover';
+        applyFit();
+
+        resSelect.value = localStorage.getItem(LS_RES) || 'auto';
+        
+        const controlsHidden = localStorage.getItem(LS_CONTROLS_HIDDEN) === 'true';
+        setControlsVisibility(controlsHidden);
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            showMessage("Your browser does not support camera access.");
+            return;
+        }
+        
+        listCameras();
+    }
+
+    initialize();
+  </script>
+</body>
+</html>
