@@ -234,13 +234,31 @@
 
     async function startStream(deviceId) {
         stopStream();
-        if (!deviceId) return;
+        setToolbarLoading(true);
     
+        if (!deviceId) {
+            showMessage("No camera selected.");
+            setToolbarLoading(false);
+            return;
+        }
+        
+        showMessage(`Connecting...`, 0);
         const constraints = buildConstraints(deviceId);
+    
         try {
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            currentStream = stream;
+            video.srcObject = stream;
             
-            // Native Resolution Detection & Dropdown Update
+            // Critical for Safari: Handle the play promise
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {
+                    showMessage("Click anywhere to start video feed", 0);
+                });
+            }
+    
+            // [Native Resolution Detection]
             const track = stream.getVideoTracks()[0];
             const settings = track.getSettings();
             if (settings.width && settings.height) {
@@ -250,23 +268,31 @@
                 }
             }
     
-            currentStream = stream;
-            video.srcObject = stream;
-            
-            // Handle iOS/macOS Safari "Autoplay" restrictions
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(error => {
-                    console.log("Playback prevented. User interaction required.");
-                    showMessage("Click 'Fullscreen' or screen to start video", 0);
-                });
-            }
-    
-            updateOverlayDevice();
-            startFpsLoop();
             localStorage.setItem(LS_CAM, deviceId);
+            updateOverlayDevice();
+            resetFpsCounter();
+            startFpsLoop();
+            showMessage("Camera stream started!", 2000);
+    
         } catch (err) {
-            handleMediaError(err, deviceId);
+            console.error(`Failed to start stream for ${deviceId}:`, err);
+            let message = 'Error starting camera. See console for details.';
+            
+            if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+                message = 'Permission denied. Please allow camera access in browser settings.';
+            } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                message = 'No camera found. Connect a webcam and click Refresh.';
+            } else if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+                // Auto-fallback: If specific Res/FPS fails, try again with Auto
+                message = 'Selected settings not supported. Retrying with Auto...';
+                resSelect.value = 'auto';
+                setTimeout(() => startStream(deviceId), 1000);
+            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                message = 'Camera is already in use by another application.';
+            }
+            showMessage(message);
+        } finally {
+            setToolbarLoading(false);
         }
     }
     
