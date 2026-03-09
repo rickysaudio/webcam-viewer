@@ -161,54 +161,52 @@
     function setToolbarLoading(isLoading) {
         toolbar.classList.toggle('loading', isLoading);
     }
-
+    // Add to your script section
     async function listCameras() {
         if (isListingCameras) return;
         isListingCameras = true;
         setToolbarLoading(true);
         showMessage("Scanning for cameras...", 0);
-
+    
         try {
-            await navigator.mediaDevices.getUserMedia({ video: true });
+            // Force a permission check. Essential for macOS/Windows browser security.
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream.getTracks().forEach(track => track.stop()); // Immediately release
         } catch (e) {
-            console.error('Permission error:', e);
-            showMessage('Camera permission is required to list and use webcams.');
-            setToolbarLoading(false);
+            console.error('Permission/Hardware error:', e);
+            showMessage('Camera access denied or hardware busy.');
             isListingCameras = false;
+            setToolbarLoading(false);
             return;
         }
-
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const cams = devices.filter(d => d.kind === 'videoinput');
-        
-        const savedValue = sel.value;
-        sel.innerHTML = '';
-        
-        if (cams.length === 0) {
-            showMessage('No cameras found.');
-            setToolbarLoading(false);
+    
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const cams = devices.filter(d => d.kind === 'videoinput');
+            
+            sel.innerHTML = '';
+            if (cams.length === 0) {
+                showMessage('No cameras found.');
+            } else {
+                cams.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.deviceId;
+                    opt.textContent = d.label || `Camera (${d.deviceId.slice(0, 5)})`;
+                    sel.appendChild(opt);
+                });
+                
+                const savedCam = localStorage.getItem(LS_CAM);
+                if (savedCam && [...sel.options].some(o => o.value === savedCam)) {
+                    sel.value = savedCam;
+                }
+                await startStream(sel.value);
+            }
+        } catch (err) {
+            showMessage("Failed to list devices: " + err.message);
+        } finally {
             isListingCameras = false;
-            return;
+            setToolbarLoading(false);
         }
-
-        let preferredCamFound = false;
-        const savedCam = localStorage.getItem(LS_CAM);
-
-        for (const d of cams) {
-            const opt = document.createElement('option');
-            opt.value = d.deviceId;
-            opt.textContent = d.label || `Camera (${d.deviceId.slice(0, 6)})`;
-            sel.appendChild(opt);
-            if (d.deviceId === savedCam) preferredCamFound = true;
-        }
-        
-        sel.value = preferredCamFound ? savedCam : (cams[0]?.deviceId || '');
-        
-        showMessage("Cameras listed.", 2000);
-        setToolbarLoading(false);
-        isListingCameras = false;
-        
-        await startStream(sel.value);
     }
     
     function buildConstraints(deviceId) {
@@ -236,64 +234,51 @@
 
     async function startStream(deviceId) {
         stopStream();
-        setToolbarLoading(true);
-
-        if (!deviceId) {
-            showMessage("No camera selected.");
-            setToolbarLoading(false);
-            return;
-        }
-        
-        showMessage(`Connecting to ${sel.selectedOptions[0]?.textContent}...`, 0);
+        if (!deviceId) return;
+    
         const constraints = buildConstraints(deviceId);
-        console.log("Requesting stream with constraints:", JSON.stringify(constraints, null, 2));
-
         try {
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            // Native Resolution Detection & Dropdown Update
+            const track = stream.getVideoTracks()[0];
+            const settings = track.getSettings();
+            if (settings.width && settings.height) {
+                const autoOpt = resSelect.querySelector('option[value="auto"]');
+                if (autoOpt) {
+                    autoOpt.textContent = `Auto (${settings.width}×${settings.height}) *`;
+                }
+            }
+    
             currentStream = stream;
             video.srcObject = stream;
-            await video.play();
-
-            localStorage.setItem(LS_CAM, deviceId);
-            localStorage.setItem(LS_RES, resSelect.value);
-            localStorage.setItem(LS_FPS, fpsSelect.value);
-
+            
+            // Handle iOS/macOS Safari "Autoplay" restrictions
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(error => {
+                    console.log("Playback prevented. User interaction required.");
+                    showMessage("Click 'Fullscreen' or screen to start video", 0);
+                });
+            }
+    
             updateOverlayDevice();
-            ovTarget.textContent = (fpsSelect.value === 'auto') ? 'auto' : fpsSelect.value;
-            resetFpsCounter();
             startFpsLoop();
-            showMessage("Camera stream started!", 2000);
-
+            localStorage.setItem(LS_CAM, deviceId);
         } catch (err) {
-            console.error(`Failed to start stream for ${deviceId}:`, err);
-            let message = 'Error starting camera. See console for details.';
-            if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
-                message = 'Permission denied. Please allow camera access in browser settings.';
-            } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-                message = 'No camera found. Connect a webcam and click Refresh.';
-            } else if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
-                message = 'Selected settings (resolution/FPS) are not supported by this camera.';
-            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-                message = 'Camera is already in use by another application.';
-            }
-            showMessage(message);
-
-            const currentOption = sel.querySelector(`option[value="${deviceId}"]`);
-            if (currentOption) {
-                currentOption.textContent += " (unavailable)";
-                currentOption.disabled = true;
-            }
-
-            const nextOption = [...sel.options].find(o => !o.disabled);
-            if (nextOption) {
-                sel.value = nextOption.value;
-                await startStream(nextOption.value);
-            } else {
-                showMessage("All available cameras failed to start.", 5000);
-            }
-        } finally {
-            setToolbarLoading(false);
+            handleMediaError(err, deviceId);
         }
+    }
+    
+    function handleMediaError(err, deviceId) {
+        let msg = "Error: " + err.name;
+        if (err.name === 'NotReadableError') msg = "Camera is locked by another app.";
+        if (err.name === 'OverconstrainedError') {
+            msg = "Resolution not supported. Retrying with Auto...";
+            resSelect.value = "auto";
+            startStream(deviceId);
+        }
+        showMessage(msg, 5000);
     }
 
     function stopStream() {
