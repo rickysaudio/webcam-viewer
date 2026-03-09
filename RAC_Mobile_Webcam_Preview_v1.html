@@ -326,58 +326,62 @@
     async function startStream(deviceId) {
         stopStream();
         setToolbarLoading(true);
-
-        if (!deviceId) {
-            showMessage("No camera selected.");
-            setToolbarLoading(false);
-            return;
+    
+        // Deep Cleanup for Mobile Memory
+        if (video.srcObject) {
+            video.srcObject.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
         }
-        
-        showMessage(`Connecting...`, 0);
+    
         const constraints = buildConstraints(deviceId);
         
         try {
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            currentStream = stream;
+            
+            // Detection of Native Hardware Resolution
+            const track = stream.getVideoTracks()[0];
+            const settings = track.getSettings();
+            if (settings.width && settings.height) {
+                const autoOpt = resSelect.querySelector('option[value="auto"]');
+                if (autoOpt) autoOpt.textContent = `Auto (${settings.width}×${settings.height}) *`;
+            }
+    
             video.srcObject = stream;
-            // The video element is muted, play should succeed on mobile.
+            currentStream = stream;
+    
+            // Ensure Video Plays (Critical for iOS Safari)
+            video.setAttribute('autoplay', '');
+            video.setAttribute('muted', '');
+            video.setAttribute('playsinline', '');
+            
             await video.play();
-
-            localStorage.setItem(LS_CAM, deviceId);
-            localStorage.setItem(LS_RES, resSelect.value);
-
+            
             updateOverlayDevice();
-            resetFpsCounter();
             startFpsLoop();
-            showMessage("Stream started!", 2000);
-
+            localStorage.setItem(LS_CAM, deviceId);
+            showMessage("Stream active", 2000);
         } catch (err) {
-            console.error(`Failed to start stream for ${deviceId}:`, err);
-            let message = 'Could not start camera.';
-            if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
-                message = 'Resolution not supported by this camera.';
-            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-                message = 'Camera is in use by another app.';
-            }
-            showMessage(message);
-
-            const currentOption = sel.querySelector(`option[value="${deviceId}"]`);
-            if (currentOption) {
-                currentOption.textContent += " (X)";
-                currentOption.disabled = true;
-            }
-
-            const nextOption = [...sel.options].find(o => !o.disabled);
-            if (nextOption) {
-                sel.value = nextOption.value;
-                await startStream(nextOption.value);
+            console.error(err);
+            // Fallback: If ideal resolution fails, retry with absolute defaults
+            if (resSelect.value !== "auto") {
+                resSelect.value = "auto";
+                startStream(deviceId);
             } else {
-                showMessage("All cameras failed to start.", 5000);
+                showMessage("Hardware Error: " + err.name);
             }
         } finally {
             setToolbarLoading(false);
         }
     }
+    
+    // Memory Safety: Stop camera if user switches tabs or locks phone
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopStream();
+        } else {
+            if (sel.value) startStream(sel.value);
+        }
+    });
 
     function stopStream() {
         if (currentStream) {
