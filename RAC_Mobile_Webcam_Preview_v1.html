@@ -304,11 +304,16 @@
         const constraints = {
             audio: false,
             video: {
-                deviceId: deviceId ? { exact: deviceId } : undefined,
-                facingMode: 'environment'
+                // [Optimization] Use 'ideal' for deviceId to allow smoother switching
+                deviceId: deviceId ? { ideal: deviceId } : undefined
             }
         };
-
+    
+        // Only apply facingMode if we don't have a specific deviceId selected yet
+        if (!deviceId) {
+            constraints.video.facingMode = 'environment';
+        }
+    
         const res = resSelect.value;
         if (res !== 'auto') {
             const [width, height] = res.split('x').map(Number);
@@ -488,19 +493,25 @@
 
     // --- Initialization ---
     function initialize() {
+        // [Optimization] Mark default resolution with asterisk
+        const defaultRes = "auto";
+        Array.from(resSelect.options).forEach(opt => {
+            if (opt.value === defaultRes) opt.textContent += " *";
+        });
+    
         mirrorChk.checked = localStorage.getItem(LS_MIRROR) === 'true';
         vflipChk.checked = localStorage.getItem(LS_VFLIP) === 'true';
         applyMirror();
         applyVFlip();
-
+    
         fitSelect.value = localStorage.getItem(LS_FIT) || 'cover';
         applyFit();
-
-        resSelect.value = localStorage.getItem(LS_RES) || 'auto';
+    
+        resSelect.value = localStorage.getItem(LS_RES) || defaultRes;
         
         const controlsHidden = localStorage.getItem(LS_CONTROLS_HIDDEN) === 'true';
         setControlsVisibility(controlsHidden);
-
+    
         if (!navigator.mediaDevices?.getUserMedia) {
             showMessage("Your browser does not support camera access.");
             return;
