@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>Mobile Webcam Viewer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <style>
     :root { 
       color-scheme: dark; 
@@ -36,6 +36,9 @@
       transform: translateY(0);
       opacity: 1;
       transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+      padding-top: env(safe-area-inset-top);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
     }
     .toolbar.loading { 
       opacity: 0.7; 
@@ -110,6 +113,8 @@
       border: 1px solid rgba(255,255,255,.08);
       opacity: 1;
       transition: opacity 0.3s ease-out;
+      bottom: calc(.75rem + env(safe-area-inset-bottom));
+      left: calc(.75rem + env(safe-area-inset-left));
     }
     .overlay .row { 
       display: flex; 
@@ -424,22 +429,29 @@
 
     async function goFullscreen() {
         const elem = document.documentElement;
+        const videoElem = document.getElementById('video');
+    
         try {
-            if (!document.fullscreenElement) {
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (elem.requestFullscreen) {
                     await elem.requestFullscreen();
-                } else if (elem.webkitRequestFullscreen) { /* Safari */
+                } else if (elem.webkitRequestFullscreen) {
+                    // This works on most modern mobile browsers
                     await elem.webkitRequestFullscreen();
+                } else if (videoElem.webkitEnterFullscreen) {
+                    // Specific fallback for older iPhones to force the video into the native player
+                    videoElem.webkitEnterFullscreen();
                 }
             } else {
                 if (document.exitFullscreen) {
                     await document.exitFullscreen();
-                } else if (document.webkitExitFullscreen) { /* Safari */
+                } else if (document.webkitExitFullscreen) {
                     await document.webkitExitFullscreen();
                 }
             }
         } catch (e) {
             console.error('Fullscreen toggle failed:', e);
+            showMessage("Fullscreen not supported or blocked by browser.");
         }
     }
 
