@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Mobile Webcam Viewer</title>
+  <title>Mobile Webcam Viewer v1.01</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <style>
     :root { 
@@ -280,6 +280,9 @@
 
         let preferredCamFound = false;
         const savedCam = localStorage.getItem(LS_CAM);
+        
+        // Ensure external UVC capture cards are prioritized above internal cameras
+        const externalCam = cams.find(d => /usb|capture|magewell|external|video class|uvc/i.test(d.label));
         const rearFacingCam = cams.find(d => /back|rear/i.test(d.label));
 
         cams.forEach((d) => {
@@ -290,8 +293,11 @@
             if (d.deviceId === savedCam) preferredCamFound = true;
         });
         
+        // Execution Priority: Saved > External/UVC > Internal Rear > Array Zero
         if (preferredCamFound) {
             sel.value = savedCam;
+        } else if (externalCam) {
+            sel.value = externalCam.deviceId; 
         } else if (rearFacingCam) {
             sel.value = rearFacingCam.deviceId;
         } else if (cams.length > 0) {
@@ -309,12 +315,11 @@
         const constraints = {
             audio: false,
             video: {
-                // [Optimization] Use 'ideal' for deviceId to allow smoother switching
-                deviceId: deviceId ? { ideal: deviceId } : undefined
+                // Strict binding to prevent silent stream fallbacks
+                deviceId: deviceId ? { exact: deviceId } : undefined
             }
         };
     
-        // Only apply facingMode if we don't have a specific deviceId selected yet
         if (!deviceId) {
             constraints.video.facingMode = 'environment';
         }
@@ -346,13 +351,11 @@
             currentStream = stream;
             video.srcObject = stream;
             
-            // Mobile-specific attributes for stable autoplay
             video.setAttribute('autoplay', '');
             video.setAttribute('muted', '');
             video.setAttribute('playsinline', '');
             await video.play();
     
-            // [Native Resolution Detection]
             const track = stream.getVideoTracks()[0];
             const settings = track.getSettings();
             if (settings.width && settings.height) {
@@ -373,12 +376,19 @@
             if (err.name === 'NotAllowedError') {
                 message = 'Camera permission denied.';
             } else if (err.name === 'OverconstrainedError') {
-                message = 'Resolution not supported. Reverting to Auto.';
-                resSelect.value = 'auto';
-                startStream(deviceId);
-                return;
-            } else if (err.name === 'NotReadableError') {
-                message = 'Camera is in use by another app.';
+                // Safely handles both resolution drops AND cached stale device IDs
+                message = 'Settings unsupported. Reverting to defaults.';
+                if (resSelect.value !== 'auto') {
+                    resSelect.value = 'auto';
+                    startStream(deviceId);
+                    return;
+                } else {
+                    localStorage.removeItem(LS_CAM);
+                    startStream(null);
+                    return;
+                }
+            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                message = 'Camera is in use by another app or disconnected.';
             }
             showMessage(message);
         } finally {
@@ -386,13 +396,10 @@
         }
     }
     
-    // Rock-solid Mobile Stability: Manage hardware lifecycle on tab switch
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
-            // Stop hardware immediately to prevent "Locked" state in OS
             stopStream(); 
         } else {
-            // Re-initialize only if a camera was previously selected
             if (sel.value) {
                 startStream(sel.value);
             }
@@ -436,10 +443,8 @@
                 if (elem.requestFullscreen) {
                     await elem.requestFullscreen();
                 } else if (elem.webkitRequestFullscreen) {
-                    // This works on most modern mobile browsers
                     await elem.webkitRequestFullscreen();
                 } else if (videoElem.webkitEnterFullscreen) {
-                    // Specific fallback for older iPhones to force the video into the native player
                     videoElem.webkitEnterFullscreen();
                 }
             } else {
@@ -464,7 +469,7 @@
     function startFpsLoop() {
         const loop = (ts) => {
             frames++;
-            if (ts - lastTs >= 1000) { // Update once per second for less overhead
+            if (ts - lastTs >= 1000) { 
                 fps = Math.round((frames * 1000) / (ts - lastTs));
                 frames = 0;
                 lastTs = ts;
@@ -489,9 +494,11 @@
         ovFps.textContent = fps ? `${fps}` : '—';
     }
 
-    // --- Event Listeners ---
     sel.addEventListener('change', () => startStream(sel.value));
-    resSelect.addEventListener('change', () => startStream(sel.value));
+    resSelect.addEventListener('change', () => {
+        localStorage.setItem(LS_RES, resSelect.value);
+        startStream(sel.value);
+    });
     fsBtn.addEventListener('click', goFullscreen);
     refreshBtn.addEventListener('click', listCameras);
     mirrorChk.addEventListener('change', applyMirror);
@@ -502,11 +509,10 @@
         setControlsVisibility(container.classList.contains('controls-hidden') ? false : true);
     });
     hideBtn.addEventListener('click', (e) => {
-        e.stopPropagation(); // Prevent stage click from firing right after
+        e.stopPropagation(); 
         setControlsVisibility(true);
     });
 
-    // Reset auto-hide timer on any interaction with the toolbar
     toolbar.addEventListener('click', resetHideControlsTimer);
     toolbar.addEventListener('change', resetHideControlsTimer);
 
@@ -518,9 +524,7 @@
         listCameras();
     });
 
-    // --- Initialization ---
     function initialize() {
-        // [Optimization] Mark default resolution with asterisk
         const defaultRes = "auto";
         Array.from(resSelect.options).forEach(opt => {
             if (opt.value === defaultRes) opt.textContent += " *";
